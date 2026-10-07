@@ -7,7 +7,7 @@ without the vendor phone app.
 - **webcam output** through [v4l2loopback](https://github.com/v4l2loopback/v4l2loopback), so browsers, OBS,
   VLC, video-call apps and ffmpeg can use the camera like any other webcam
 - snapshots from the camera's button
-- headless mode for running as a background service
+- headless mode, plus a udev rule and systemd service that start the webcam whenever the camera is plugged in
 
 Based on [hbens/geek-szitman-supercamera](https://github.com/hbens/geek-szitman-supercamera), which
 reverse-engineered the protocol.
@@ -60,6 +60,8 @@ Check that you are in the group with `id -nG`. If not, run `sudo usermod -aG plu
 
 Avoid `MODE="0666"`: it lets every local user watch the camera and send it raw USB commands.
 
+`sudo make install` (see [Run automatically](#run-automatically)) installs this rule for you.
+
 ## Usage
 
 ```
@@ -101,6 +103,39 @@ To load the module automatically at boot:
 echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
 echo 'options v4l2loopback video_nr=10 card_label="Endoscope" exclusive_caps=1' | sudo tee /etc/modprobe.d/v4l2loopback.conf
 ```
+
+## Run automatically
+
+`make install` sets the camera up as a plug-and-play webcam: plug it in and "Endoscope" appears at `/dev/video10`.
+
+```bash
+make
+sudo make install
+```
+
+This installs:
+
+| File | Purpose |
+|------|---------|
+| `/usr/local/bin/supercamera` | the binary |
+| `/etc/udev/rules.d/70-supercamera.rules` | `plugdev` access, a `/dev/supercamera` symlink, and starting the service when the camera is plugged in |
+| `/etc/systemd/system/supercamera.service` | runs `supercamera -o /dev/video10 --no-gui` while the camera is connected |
+| `/etc/modules-load.d/v4l2loopback.conf`, `/etc/modprobe.d/v4l2loopback.conf` | load v4l2loopback at boot as `/dev/video10` |
+
+It then reloads systemd and udev, loads v4l2loopback, and re-triggers USB devices, so a camera that is already
+plugged in starts straight away.
+
+The service:
+
+- stops when the camera is unplugged, and restarts after 2 seconds if it crashes
+- runs as a throwaway system user (`DynamicUser`) in the `plugdev` and `video` groups, with device access limited
+  to USB and video devices and most of the filesystem read-only
+- saves button snapshots to `/var/lib/supercamera/pics/`
+- logs only errors: `journalctl -u supercamera`
+
+Check it with `systemctl status supercamera`. Remove everything with `sudo make uninstall`.
+The source files are in [`contrib/`](contrib). To use a different device number, change `/dev/video10` in the service and `video_nr` in the modprobe options
+to match.
 
 ## Protocol notes
 

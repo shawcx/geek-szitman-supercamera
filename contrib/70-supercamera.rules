@@ -1,0 +1,6 @@
+# Geek szitman supercamera: plugdev access, /dev/supercamera symlink,
+# and start supercamera.service (v4l2loopback webcam) while plugged in.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2ce3", ATTR{idProduct}=="3828", \
+  MODE="0660", GROUP="plugdev", SYMLINK+="supercamera", TAG+="systemd", ENV{SYSTEMD_WANTS}+="supercamera.service"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0329", ATTR{idProduct}=="2022", \
+  MODE="0660", GROUP="plugdev", SYMLINK+="supercamera", TAG+="systemd", ENV{SYSTEMD_WANTS}+="supercamera.service"

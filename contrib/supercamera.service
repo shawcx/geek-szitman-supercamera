@@ -1,0 +1,29 @@
+[Unit]
+Description=Geek szitman supercamera to v4l2loopback webcam (/dev/video10)
+BindsTo=dev-supercamera.device
+After=dev-supercamera.device systemd-modules-load.service
+
+[Service]
+ExecStart=/usr/local/bin/supercamera -o /dev/video10 --no-gui
+Restart=on-failure
+RestartSec=2
+# Per-frame log lines go to stdout; keep only errors (stderr) in the journal
+StandardOutput=null
+
+DynamicUser=yes
+SupplementaryGroups=plugdev video
+# Snapshots from the camera button land in /var/lib/supercamera/pics
+StateDirectory=supercamera
+WorkingDirectory=/var/lib/supercamera
+
+DevicePolicy=closed
+DeviceAllow=char-usb_device rw
+DeviceAllow=char-video4linux rw
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
