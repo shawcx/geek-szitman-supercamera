@@ -10,12 +10,16 @@
  * Thanks to: doctormo, jmz3, RGBA-CRT
  */
 
+#include <atomic>
 #include <chrono>
+#include <cerrno>
+#include <csignal>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -26,6 +30,11 @@
 #include <ctime>
 #endif
 
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
 #include <libusb-1.0/libusb.h>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-enum-enum-conversion"
@@ -33,6 +42,7 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-anon-enum-enum-conversion"
 #endif
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 #pragma GCC diagnostic pop
 
 static constexpr int VERBOSE = 0;
@@ -326,6 +336,71 @@ public:
     }
 };
 
+/* Writes frames to a v4l2loopback device as YUV420 (I420) */
+class V4l2Output {
+    int fd = -1;
+    int width = 0;
+    int height = 0;
+    cv::Mat yuv;
+
+    int set_format(int w, int h) {
+        struct v4l2_format fmt = {};
+        fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        fmt.fmt.pix.width = w;
+        fmt.fmt.pix.height = h;
+        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV420;
+        fmt.fmt.pix.field = V4L2_FIELD_NONE;
+        fmt.fmt.pix.bytesperline = w;
+        fmt.fmt.pix.sizeimage = w * h * 3 / 2;
+        fmt.fmt.pix.colorspace = V4L2_COLORSPACE_SRGB;
+        if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
+            std::cerr << KRED "v4l2: VIDIOC_S_FMT failed: " << strerror(errno) << KRST << std::endl;
+            return -1;
+        }
+        width = w;
+        height = h;
+        std::cout << "v4l2: output " << w << "x" << h << " YUV420" << std::endl;
+        return 0;
+    }
+
+public:
+    explicit V4l2Output(const std::string &path) {
+        fd = open(path.c_str(), O_RDWR);
+        if (fd < 0) {
+            std::cerr << "fatal: cannot open " << path << ": " << strerror(errno) << std::endl;
+            throw 1;
+        }
+        struct v4l2_capability cap = {};
+        if ((ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0)
+            || !((cap.capabilities | cap.device_caps) & V4L2_CAP_VIDEO_OUTPUT)) {
+            std::cerr << "fatal: " << path << " is not a v4l2 output device (v4l2loopback?)" << std::endl;
+            close(fd);
+            throw 1;
+        }
+    }
+
+    ~V4l2Output() {
+        close(fd);
+    }
+
+    void write_frame(const cv::Mat &bgr) {
+        /* I420 needs even dimensions */
+        if ((bgr.cols % 2) || (bgr.rows % 2)) {
+            return;
+        }
+        if ((bgr.cols != width) || (bgr.rows != height)) {
+            if (set_format(bgr.cols, bgr.rows) < 0) {
+                return;
+            }
+        }
+        cv::cvtColor(bgr, yuv, cv::COLOR_BGR2YUV_I420);
+        size_t size = yuv.total() * yuv.elemSize();
+        if (write(fd, yuv.data, size) != static_cast<ssize_t>(size)) {
+            std::cerr << KRED "v4l2: write failed: " << strerror(errno) << KRST << std::endl;
+        }
+    }
+};
+
 static std::mutex gui_mtx; /* Protects latest_frame */
 static byteVector latest_frame;
 static std::atomic_uint32_t latest_frame_id;
@@ -373,14 +448,18 @@ static void button_callback() {
     save_next_frame = true;
 }
 
-static void gui(void) {
+static void gui(bool show_window, V4l2Output *v4l2_out) {
     constexpr const char *window_name = "Geek szitman supercamera - PoC";
     uint32_t frame_done = latest_frame_id;
 
     while (!exit_program) {
-        int key = cv::waitKey(10);
-        if (key == 'q' or key == '\e') {
-            exit_program = true;
+        if (show_window) {
+            int key = cv::waitKey(10);
+            if (key == 'q' or key == '\e') {
+                exit_program = true;
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
         if (frame_done != latest_frame_id) {
@@ -391,13 +470,20 @@ static void gui(void) {
                 frame_done = latest_frame_id;
             }
             if (img.data != nullptr) {
-                cv::namedWindow(window_name, cv::WINDOW_AUTOSIZE);
-                cv::imshow(window_name, img);
+                if (v4l2_out) {
+                    v4l2_out->write_frame(img);
+                }
+                if (show_window) {
+                    cv::namedWindow(window_name, cv::WINDOW_AUTOSIZE);
+                    cv::imshow(window_name, img);
+                }
             }
         }
     }
 
-    cv::destroyWindow(window_name);
+    if (show_window) {
+        cv::destroyWindow(window_name);
+    }
 }
 
 static void upp(UsbSupercamera *usb_supercamera) {
@@ -414,16 +500,45 @@ static void upp(UsbSupercamera *usb_supercamera) {
     }
 }
 
-int main(void)
+static void usage(const char *argv0) {
+    std::cerr << "usage: " << argv0 << " [-o /dev/videoN] [--no-gui]\n"
+              << "  -o, --output DEV  also write frames to a v4l2loopback device\n"
+              << "  --no-gui          do not open a window (Ctrl-C to quit)" << std::endl;
+}
+
+int main(int argc, char **argv)
 {
+    std::string v4l2_path;
+    bool show_window = true;
+
+    for (int i = 1; i < argc; i++) {
+        std::string_view arg = argv[i];
+        if (((arg == "-o") || (arg == "--output")) && (i + 1 < argc)) {
+            v4l2_path = argv[++i];
+        } else if (arg == "--no-gui") {
+            show_window = false;
+        } else {
+            usage(argv[0]);
+            return (arg == "-h" || arg == "--help") ? 0 : 1;
+        }
+    }
+
+    std::signal(SIGINT, [](int) { exit_program = true; });
+    std::signal(SIGTERM, [](int) { exit_program = true; });
+
     try {
+        std::unique_ptr<V4l2Output> v4l2_out;
+        if (!v4l2_path.empty()) {
+            v4l2_out = std::make_unique<V4l2Output>(v4l2_path);
+        }
+
         UsbSupercamera usb_supercamera;
 
         std::filesystem::create_directory(pic_dir);
         latest_frame_id = 0;
 
         std::thread upp_thread(upp, &usb_supercamera);
-        gui();
+        gui(show_window, v4l2_out.get());
 
         upp_thread.join();
         return 0;

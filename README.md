@@ -3,7 +3,8 @@
 ### Description
 
 This repository is a proof-of-concept to use the ‘Geek szitman supercamera’ camera-based products.
-It features a small viewer app.
+It features a small viewer app, which can also expose the camera as a standard webcam through
+[v4l2loopback](https://github.com/v4l2loopback/v4l2loopback).
 
 ### Technical information
 
@@ -11,7 +12,7 @@ It features a small viewer app.
 (officially only working on iOS/Android devices with specific apps, such as ‘Usee Plus’).
 Only firmware version 1.00 has been tested. USB descriptors can be found in file the `descriptors` folder.
 
-**Contrary to the advertised specification**, the camera resolution is 640×480.
+**Contrary to the advertised specification**, the camera resolution is 640×480 (around 11 fps observed).
 
 License is CC0: integrate this code as you like in other camera viewer software / apps.
 
@@ -47,6 +48,43 @@ It will display the camera feed in a GUI window.
 - long press on the endoscope button will switch between the two cameras
 - press <kbd>q</kbd> or <kbd>Esc</kbd> in the GUI window to quit
 
+Options:
+
+```
+./out [-o /dev/videoN] [--no-gui]
+  -o, --output DEV  also write frames to a v4l2loopback device
+  --no-gui          do not open a window (Ctrl-C to quit)
+```
+
+### Webcam output (v4l2loopback)
+
+The camera does not use UVC, so it does not appear as a `/dev/video*` device on its own.
+With `-o`, the tool decodes each JPEG frame and writes it as YUV420 to a v4l2loopback device,
+so browsers, OBS, video-call apps, ffmpeg, etc. can use it like any webcam.
+
+Install and load the module (`exclusive_caps=1` is needed for Chrome/Firefox/WebRTC to list the device):
+
+```bash
+apt install v4l2loopback-dkms
+sudo modprobe v4l2loopback video_nr=10 card_label="Endoscope" exclusive_caps=1
+```
+
+Then run:
+
+```bash
+./out -o /dev/video10            # GUI window + webcam
+./out -o /dev/video10 --no-gui   # webcam only
+```
+
+Check it with `ffplay -f v4l2 /dev/video10`.
+
+To load the module automatically at boot:
+
+```bash
+echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
+echo 'options v4l2loopback video_nr=10 card_label="Endoscope" exclusive_caps=1' | sudo tee /etc/modprobe.d/v4l2loopback.conf
+```
+
 ### udev rules
 
 To allow running the tool without superuser privileges, add a udev rule:
@@ -70,6 +108,8 @@ lsusb -vd $(lsusb | grep Geek | awk '{print $6}')
 **Known issues:**
 
 - `fatal: usb device not found`: check your device is properly plugged in. Check you have added udev rules properly. Try to run the program with root privileges: `sudo ./out`.
+- `handle_upp_frame usb frame bad magic` once at startup: harmless, the packet is dropped and frames stream normally afterwards.
+- `fatal: cannot open /dev/videoN` or `fatal: /dev/videoN is not a v4l2 output device`: the v4l2loopback module is not loaded, or `N` does not match its `video_nr`.
 
 ### License
 
