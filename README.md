@@ -87,12 +87,16 @@ echo 'options v4l2loopback video_nr=10 card_label="Endoscope" exclusive_caps=1' 
 
 ### udev rules
 
-To allow running the tool without superuser privileges, add a udev rule:
+To allow running the tool without superuser privileges, add a udev rule giving the `plugdev` group access
+(avoid `MODE="0666"`, which lets every local user view the camera and send it raw USB commands):
 
 ```bash
-echo 'SUBSYSTEMS=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="2ce3", ATTRS{idProduct}=="3828", MODE="0666"' | sudo tee /etc/udev/rules.d/99-supercamera.rules
-echo 'SUBSYSTEMS=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="0329", ATTRS{idProduct}=="2022", MODE="0666"' | sudo tee -a /etc/udev/rules.d/99-supercamera.rules
+echo 'SUBSYSTEMS=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="2ce3", ATTRS{idProduct}=="3828", MODE="0660", GROUP="plugdev"' | sudo tee /etc/udev/rules.d/70-supercamera.rules
+echo 'SUBSYSTEMS=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="0329", ATTRS{idProduct}=="2022", MODE="0660", GROUP="plugdev"' | sudo tee -a /etc/udev/rules.d/70-supercamera.rules
+sudo udevadm control --reload && sudo udevadm trigger
 ```
+
+Make sure your user is in the group (`id -nG`; if not, `sudo usermod -aG plugdev $USER` and log in again).
 
 ### Troubleshooting
 

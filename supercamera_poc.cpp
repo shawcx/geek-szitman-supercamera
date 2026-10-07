@@ -259,6 +259,8 @@ class UPPCamera {
     static constexpr uint16_t UPP_USB_MAGIC = 0xBBAA;
     static constexpr uint8_t UPP_CAMID_7 = 7;
     static constexpr uint8_t UPP_CAMID_11 = 11;
+    /* Real 640x480 frames are ~17 KB; cap so a stuck frame id cannot exhaust memory */
+    static constexpr size_t MAX_PICTURE_SIZE = 1024 * 1024;
 
     byteVector camera_buffer;
     upp_cam_frame_t cam_header = {};
@@ -298,7 +300,7 @@ public:
 
         /* Decode upp_cam_frame_t */
         size_t cam_header_len = sizeof(upp_cam_frame_t);
-        if (data.size() - usb_header_len < cam_header_len) {
+        if ((data.size() - usb_header_len < cam_header_len) || (frame->length < cam_header_len)) {
             std::cerr << __func__ << " cam frame too small" << std::endl;
             return;
         }
@@ -330,8 +332,15 @@ public:
             btn_callback();
         }
 
+        size_t cam_data_len = frame->length - cam_header_len;
+        if (camera_buffer.size() + cam_data_len > MAX_PICTURE_SIZE) {
+            std::cerr << __func__ << " picture too large, dropped" << std::endl;
+            camera_buffer.resize(0);
+            return;
+        }
+
         auto cam_data_start = data.begin() + usb_header_len + cam_header_len;
-        auto cam_data_end = data.begin() + usb_header_len + frame->length;
+        auto cam_data_end = cam_data_start + cam_data_len;
         camera_buffer.insert(camera_buffer.end(), cam_data_start, cam_data_end);
     }
 };
